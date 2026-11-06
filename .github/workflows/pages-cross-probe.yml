@@ -1,0 +1,148 @@
+name: Pages cross-repository binding probe
+run-name: Pages cross-repository binding probe
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+  pages: write
+  id-token: write
+  deployments: write
+jobs:
+  probe:
+    environment:
+      name: github-pages
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Prepare B-only inert probe marker
+        shell: bash
+        env:
+          B_ONLY_MARKER: B_ONLY_9b234e7dfb60e60abdcbd7a1cd50b2e7
+        run: |
+          set -euo pipefail
+          mkdir -p probe-site
+          printf '%s\n' "$B_ONLY_MARKER" > probe-site/index.html
+      - name: Upload B-only Pages artifact
+        id: upload
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: probe-site
+      - name: Probe repository, artifact, deployment, and environment binding
+        id: probe
+        uses: actions/github-script@v7
+        env:
+          B_ARTIFACT_ID: ${{ steps.upload.outputs.artifact_id }}
+          A_OWNER: Per0x1de-1337
+          A_REPO: pages-bind-a-20261106215727-3b5d41
+          A_REPO_ID: '1448787831'
+          A_ARTIFACT_ID: '13543737177'
+          A_PAGES_DEPLOYMENT_ID: bce16c8aef9b1853d5de8d2c8c7a739e1d8e1be7
+          B_PAGES_DEPLOYMENT_ID: 3b947389f0f65bb357aab1dac52fe21b854b643e
+          A_GENERIC_DEPLOYMENT_ID: '7611771309'
+          A_SHA: bce16c8aef9b1853d5de8d2c8c7a739e1d8e1be7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const oidc = await core.getIDToken()
+            const bArtifact = Number(process.env.B_ARTIFACT_ID)
+            const aArtifact = Number(process.env.A_ARTIFACT_ID)
+            const aOwner = process.env.A_OWNER
+            const aRepo = process.env.A_REPO
+            const bOwner = context.repo.owner
+            const bRepo = context.repo.repo
+            const aArtifactUrl = `https://api.github.com/repos/${aOwner}/${aRepo}/actions/artifacts/${aArtifact}/zip`
+            const bArtifactUrl = `https://api.github.com/repos/${bOwner}/${bRepo}/actions/artifacts/${bArtifact}/zip`
+
+            async function attempt(name, route, parameters, stopOnSuccess = false) {
+              try {
+                const response = await github.request(route, parameters)
+                const responseId = response.data && response.data.id ? String(response.data.id) : ''
+                const pageUrl = response.data && response.data.page_url ? String(response.data.page_url) : ''
+                core.info(`PROBE ${name} status=${response.status} response_id=${responseId} page_url=${pageUrl}`)
+                if (stopOnSuccess && response.status >= 200 && response.status < 300) {
+                  core.setFailed(`UNEXPECTED cross-repository acceptance: ${name}`)
+                  return true
+                }
+              } catch (error) {
+                const status = error.status || 'ERR'
+                const message = String(error.message || '').replace(/\s+/g, ' ').slice(0, 180)
+                core.info(`PROBE ${name} status=${status} message=${message}`)
+              }
+              return false
+            }
+
+            if (await attempt('B_ARTIFACT_TO_A_PATH', 'POST /repos/{owner}/{repo}/pages/deployments', {
+              owner: aOwner, repo: aRepo, artifact_id: bArtifact, environment: 'github-pages',
+              pages_build_version: context.sha, oidc_token: oidc
+            }, true)) return
+
+            if (await attempt('A_ARTIFACT_TO_A_PATH_WITH_B_IDENTITY', 'POST /repos/{owner}/{repo}/pages/deployments', {
+              owner: aOwner, repo: aRepo, artifact_id: aArtifact, environment: 'github-pages',
+              pages_build_version: context.sha, oidc_token: oidc
+            }, true)) return
+
+            if (await attempt('B_ARTIFACT_URL_TO_A_PATH', 'POST /repos/{owner}/{repo}/pages/deployments', {
+              owner: aOwner, repo: aRepo, artifact_url: bArtifactUrl, environment: 'github-pages',
+              pages_build_version: context.sha, oidc_token: oidc
+            }, true)) return
+
+            await attempt('A_ARTIFACT_TO_B_PATH', 'POST /repos/{owner}/{repo}/pages/deployments', {
+              owner: bOwner, repo: bRepo, artifact_id: aArtifact, environment: 'github-pages',
+              pages_build_version: context.sha, oidc_token: oidc
+            })
+
+            await attempt('A_ARTIFACT_URL_TO_B_PATH', 'POST /repos/{owner}/{repo}/pages/deployments', {
+              owner: bOwner, repo: bRepo, artifact_url: aArtifactUrl, environment: 'github-pages',
+              pages_build_version: context.sha, oidc_token: oidc
+            })
+
+            await attempt('B_ARTIFACT_WITH_A_REPO_ID_BODY', 'POST /repos/{owner}/{repo}/pages/deployments', {
+              owner: bOwner, repo: bRepo, artifact_id: bArtifact, environment: 'github-pages',
+              pages_build_version: context.sha, oidc_token: oidc,
+              repository_id: Number(process.env.A_REPO_ID), repo_id: Number(process.env.A_REPO_ID)
+            })
+
+            await attempt('A_GENERIC_DEPLOYMENT_ID_UNDER_B_PATH', 'GET /repos/{owner}/{repo}/deployments/{deployment_id}', {
+              owner: bOwner, repo: bRepo, deployment_id: Number(process.env.A_GENERIC_DEPLOYMENT_ID)
+            })
+
+            await attempt('A_PAGES_DEPLOYMENT_ID_UNDER_B_PATH', 'GET /repos/{owner}/{repo}/pages/deployments/{pages_deployment_id}', {
+              owner: bOwner, repo: bRepo, pages_deployment_id: process.env.A_PAGES_DEPLOYMENT_ID
+            })
+
+            await attempt('B_PAGES_DEPLOYMENT_ID_UNDER_A_PATH', 'GET /repos/{owner}/{repo}/pages/deployments/{pages_deployment_id}', {
+              owner: aOwner, repo: aRepo, pages_deployment_id: process.env.B_PAGES_DEPLOYMENT_ID
+            })
+
+            await attempt('A_PAGES_DEPLOYMENT_EXACT_PUBLIC_READ', 'GET /repos/{owner}/{repo}/pages/deployments/{pages_deployment_id}', {
+              owner: aOwner, repo: aRepo, pages_deployment_id: process.env.A_PAGES_DEPLOYMENT_ID
+            })
+
+            if (await attempt('CREATE_GENERIC_DEPLOYMENT_ON_A', 'POST /repos/{owner}/{repo}/deployments', {
+              owner: aOwner, repo: aRepo, ref: context.sha, environment: 'github-pages',
+              auto_merge: false, required_contexts: []
+            }, true)) return
+
+            await attempt('A_REF_GENERIC_DEPLOYMENT_ON_B', 'POST /repos/{owner}/{repo}/deployments', {
+              owner: bOwner, repo: bRepo, ref: process.env.A_SHA, environment: 'github-pages',
+              auto_merge: false, required_contexts: []
+            })
+
+            await attempt('A_ENVIRONMENT_PUBLIC_READ', 'GET /repos/{owner}/{repo}/environments/{environment_name}', {
+              owner: aOwner, repo: aRepo, environment_name: 'github-pages'
+            })
+      - name: First-party deploy action with foreign artifact ID as artifact name
+        id: foreign_action
+        continue-on-error: true
+        uses: actions/deploy-pages@v4
+        with:
+          artifact_name: '13543737177'
+          timeout: '60000'
+          error_count: '1'
+          reporting_interval: '1000'
+      - name: Record safe outcomes
+        if: always()
+        shell: bash
+        run: |
+          printf 'B_PROBE_ARTIFACT_ID=%s\nFOREIGN_ACTION_OUTCOME=%s\nFOREIGN_ACTION_CONCLUSION=%s\n' '${{ steps.upload.outputs.artifact_id }}' '${{ steps.foreign_action.outcome }}' '${{ steps.foreign_action.conclusion }}'
