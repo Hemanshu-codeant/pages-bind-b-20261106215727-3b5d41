@@ -97,7 +97,10 @@ jobs:
               pages_build_version: context.sha, oidc_token: oidc
             })
 
-            await attempt('B_ARTIFACT_WITH_A_REPO_ID_BODY', 'POST /repos/{owner}/{repo}/pages/deployments', {
+await attempt('B_ARTIFACT_WITH_A_PAGES_BUILD_VERSION', 'POST /repos/{owner}/{repo}/pages/deployments', {
+              owner: bOwner, repo: bRepo, artifact_id: bArtifact, environment: 'github-pages',
+              pages_build_version: process.env.A_SHA, oidc_token: oidc
+            })            await attempt('B_ARTIFACT_WITH_A_REPO_ID_BODY', 'POST /repos/{owner}/{repo}/pages/deployments', {
               owner: bOwner, repo: bRepo, artifact_id: bArtifact, environment: 'github-pages',
               pages_build_version: context.sha, oidc_token: oidc,
               repository_id: Number(process.env.A_REPO_ID), repo_id: Number(process.env.A_REPO_ID)
